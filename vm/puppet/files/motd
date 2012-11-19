@@ -1,0 +1,8 @@
+Welcome to the CVEnv virtual machine, managed by Puppet.
+
+To build some code:
+
+  cd /cvenv/depot/
+  blaze build ...
+
+More information at: https://github.com/sholiday/cvenv

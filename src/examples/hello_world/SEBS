@@ -1,0 +1,10 @@
+_cpp = sebs.import_("//sebs/cpp.sebs")
+
+hello_world_main = _cpp.Binary (
+  name = "hello_world_main",
+  srcs = [ "hello_world_main.cc",
+         ],
+  deps = [
+          _cpp.SystemLibrary(name = "gflags"),
+           _cpp.SystemLibrary(name = "glog"),
+         ])

@@ -1,0 +1,309 @@
+# Scalable Extendable Build System
+# Copyright (c) 2009 Kenton Varda and contributors.  All rights reserved.
+# Portions copyright Google, Inc.
+# http://code.google.com/p/sebs
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are
+# met:
+#
+#     * Redistributions of source code must retain the above copyright
+# notice, this list of conditions and the following disclaimer.
+#     * Redistributions in binary form must reproduce the above
+# copyright notice, this list of conditions and the following disclaimer
+# in the documentation and/or other materials provided with the
+# distribution.
+#     * Neither the name of the SEBS project nor the names of its
+# contributors may be used to endorse or promote products derived from
+# this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+import os.path
+#import md5
+import hashlib
+
+_python = sebs.import_("python.sebs")
+
+_run_test = _python.Binary(name = "run_test",
+                           main = "sebs.run_test",
+                           srcs = [ "run_test.py" ])
+
+class _EnvironmentOption(sebs.Rule):
+  argument_spec = sebs.ArgumentSpec(
+      env_name = str,
+      default = (str, ""),
+      default_copy_from = (sebs.Rule, None),
+      description = (str, ""))
+
+  def _expand(self, args):
+    if args.description == "":
+      description = args.env_name
+    else:
+      description = args.description
+
+    action = self.context.action(self, "configure", description)
+    output = self.context.memory_artifact(args.env_name, action)
+
+    if args.default_copy_from is not None:
+      args.default_copy_from.expand_once()
+      default = args.default_copy_from.output
+    else:
+      default = args.default
+
+    action.set_command(sebs.EnvironmentCommand(
+        self.context, args.env_name, output, default, set_status=True))
+
+    self.value = output.contents()
+    self.output = output
+    self.outputs = [output]
+
+def _option(env_name, default, description):
+  if isinstance(default, _EnvironmentOption):
+    return _EnvironmentOption(env_name = env_name, default_copy_from = default,
+                              description = description)
+  else:
+    return _EnvironmentOption(env_name = env_name, default = default,
+                              description = description)
+
+cc       = _option("CC"      , "cc"    , "C compiler"             )
+cxx      = _option("CXX"     , "g++"   , "C++ compiler"           )
+ar       = _option("AR"      , "ar"    , "static library archiver")
+cflags   = _option("CFLAGS"  , "-O2 -g", "C compiler flags"       )
+cxxflags = _option("CXXFLAGS", cflags , "C++ compiler flags"     )
+ldflags  = _option("LDFLAGS" , "" , "linker flags"           )
+testflags = _option("TESTFLAGS", ""    , "test runner flags"      )
+
+class SystemLibrary(sebs.Rule):
+  argument_spec = sebs.ArgumentSpec(name = str,
+                                    deps = ([sebs.Artifact], []))
+
+  def _expand(self, args):
+    self.lib = args.name
+    self.outputs = []
+    self.transitive_libs = set()
+
+    # Must be greater than the dep_level of all dependencies.  Used to sort
+    # libraries on the linker command line.
+    self.dep_level = 0
+
+    for dep in args.deps:
+      if not isinstance(dep, SystemLibrary):
+        raise sebs.DefinitionError(
+          "Dependency of system library is not a system library: %s" % dep)
+      dep.expand_once()
+      self.transitive_libs.add((dep.dep_level, dep.lib))
+      # caihsiaoster
+      # self.transitive_libs.update(dep.transitive_libs)
+      self.transitive_libs += dep.transitive_libs
+      if self.dep_level <= dep.dep_level:
+        self.dep_level = dep.dep_level + 1
+
+  def as_cpp_library(self):
+    return self
+
+class _Base(sebs.Rule):
+  argument_spec = sebs.ArgumentSpec(srcs = [sebs.Artifact],
+                                    deps = ([sebs.Rule], []))
+
+  def _expand(self, args):
+    self.__srcs = args.srcs
+
+    # ----------------------------------------------------------------
+    # find transitive deps
+
+    self.transitive_deps = set()
+    # caihsiaoster
+    # change set to list to maintain relative order of system libraries
+    # in sebs. This will address the system library dependency issue.
+    self.transitive_libs = []
+    self.generated_headers = set()
+
+    # Must be greater than the dep_level of all dependencies.  Used to sort
+    # libraries on the linker command line.
+    self.dep_level = 0
+
+    for src in args.srcs:
+      name, ext = os.path.splitext(src.filename)
+      if src.action is not None and \
+         ext in [".h", ".H", ".hh", ".hpp", ".hxx", ".h++"]:
+        self.generated_headers.add(src)
+
+    for dep in args.deps:
+      dep = dep.as_cpp_library()
+      if isinstance(dep, SystemLibrary):
+        dep.expand_once()
+        # caihsiaoster
+        # self.transitive_libs.add((dep.dep_level, dep.lib))
+        self.transitive_libs.append((dep.dep_level, dep.lib))
+        # self.transitive_libs.update(dep.transitive_libs)
+        self.transitive_libs += dep.transitive_libs
+        if self.dep_level <= dep.dep_level:
+          self.dep_level = dep.dep_level + 1
+      elif isinstance(dep, Library):
+        dep.expand_once()
+        self.transitive_deps.add((dep.dep_level, dep.static_library))
+        self.transitive_deps.update(dep.transitive_deps)
+        # caihsiaoster
+        #self.transitive_libs.update(dep.transitive_libs)
+        self.transitive_libs += dep.transitive_libs
+        self.generated_headers.update(dep.generated_headers)
+        if self.dep_level <= dep.dep_level:
+          self.dep_level = dep.dep_level + 1
+      else:
+        raise sebs.DefinitionError(
+          "Dependency of C++ rule is not a C++ library: %s" % dep)
+
+    # ----------------------------------------------------------------
+    # make compile actions
+
+    for rule in [cxx, cflags, cxxflags]:
+      rule.expand_once()
+
+    self.objects = []
+    generated_headers = list(self.generated_headers)
+    for src in args.srcs:
+      name, ext = os.path.splitext(src.filename)
+      if ext in [".c", ".C", ".cc", ".cpp", ".cxx", ".c++"]:
+        action = self.context.action(self, "compile", src.filename)
+        obj = self.context.derived_artifact(src, ".o", action)
+        dep = self.context.derived_artifact(obj, ".d", action)
+        self.objects.append(obj)
+        action.set_command(
+          sebs.DepFileCommand(
+            sebs.SubprocessCommand(action,
+              [
+                cxx.value, cxxflags.value,
+                ["-I", sebs.SubprocessCommand.DirectoryToken("src")],
+                ["-I", sebs.SubprocessCommand.DirectoryToken("tmp")],
+                ["-I", sebs.SubprocessCommand.DirectoryToken("include")],
+                "-MD", "-c", src, "-o", obj
+              ],
+              implicit = [dep] + generated_headers),
+            dep))
+      elif ext not in [".h", ".H", ".hh", ".hpp", ".hxx", ".h++"]:
+        raise sebs.DefinitionError(
+          "File extension not recognized as a C++ source or header: %s" % src)
+
+  def anonymous_name(self):
+    if self.label is None:
+      # Create a stable, unique temporary name for the library.
+      # caihsiaoster: replace deprecated md5 with hashlib
+      # input_digest = md5.new()
+      input_digest = hashlib.md5()
+      for src in self.__srcs:
+        input_digest.update(src.filename)
+      return input_digest.hexdigest()[-8:]
+    else:
+      return self.label
+
+class Library(_Base):
+  argument_spec = _Base.argument_spec.extend(name = (str, None))
+
+  def _expand(self, args):
+    super(Library, self)._expand(args)
+
+    static_link_action = self.context.action(self, "link")
+
+    if args.name is None:
+      # Output library to intermediate directory.
+      static_lib = self.context.intermediate_artifact(
+          "lib%s.a" % self.anonymous_name(), static_link_action)
+    else:
+      # Output library to lib directory.
+      static_lib = self.context.output_artifact(
+          "lib", "lib%s.a" % args.name, static_link_action)
+
+    # Remove existing library, since we don't know if it was created with the
+    # same set of sources.  It appears the "ar" command does not have any
+    # option for "remove any files that aren't in the list".
+    rm = sebs.SubprocessCommand(static_link_action, ["rm", "-f", static_lib])
+
+    # Create the library archive, with a symbol table.
+    ar.expand_once()
+    ar_command = sebs.SubprocessCommand(
+        static_link_action, [ar.value, "-qcs", static_lib] + self.objects)
+
+    static_link_action.set_command(sebs.DoAllCommand([rm, ar_command]))
+
+    self.static_library = static_lib
+    self.outputs = [static_lib]
+
+  def as_cpp_library(self):
+    return self
+
+class Binary(_Base):
+  argument_spec = _Base.argument_spec.extend(name = (str, None))
+
+  def _expand(self, args):
+    super(Binary, self)._expand(args)
+
+    link_action = self.context.action(self, "link")
+
+    exeext = self.context.environment_artifact("EXEEXT")
+
+    if args.name is None:
+      # Output binary to intermediate directory.
+      binary_name = "%s_bin" % self.anonymous_name()
+      output = self.context.intermediate_artifact(
+          binary_name, link_action, configured_name = [binary_name, exeext])
+    else:
+      output = self.context.output_artifact(
+          "bin", args.name, link_action,
+          configured_name = [args.name, exeext])
+
+    ordered_libs = \
+      [(-level, dep.filename, dep) for level, dep in self.transitive_deps]
+    # caihsiaoster
+    # Do not sort system libraries, maintain their relative order in sebs.
+    ordered_libs.sort()
+    ordered_libs.extend(
+      [(-level, lib, "-l" + lib) for level, lib in self.transitive_libs])
+
+    lib_args = [arg for level, name, arg in ordered_libs]
+    link_action.set_command(
+      sebs.SubprocessCommand(link_action,
+        [cxx.value, cxxflags.value, "-o", output] + self.objects + lib_args))
+
+    self.binary = output
+    self.outputs = [output]
+
+class Test(sebs.Test):
+  argument_spec = _Base.argument_spec
+
+  def _expand(self, args):
+    self.__binary_rule = Binary(context = self.context, **args.__dict__)
+    self.__binary_rule.label = self.label
+    self.__binary_rule.expand_once()
+    testflags.expand_once()
+    _run_test.expand_once()
+    test_runner = self.context.configured_artifact(_run_test.binary, "host")
+
+    action = self.context.action(self, "test")
+    output = self.context.intermediate_artifact(
+        "%s_output.txt" % self.__binary_rule.anonymous_name(), action)
+    result = self.context.memory_artifact(
+        "%s_result" % self.__binary_rule.anonymous_name(), action)
+    action.set_command(
+        sebs.SubprocessCommand(
+          action,
+          [test_runner, testflags.value, self.__binary_rule.binary],
+          capture_stdout = output,
+          capture_stderr = output,
+          capture_exit_status = result))
+
+    self.test_result_artifact = result
+    self.test_output_artifact = output
+
+    # If built directly, build the test binary but don't run it.
+    self.outputs = [self.__binary_rule.binary]
