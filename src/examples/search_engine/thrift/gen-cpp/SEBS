@@ -1,0 +1,20 @@
+_cpp = sebs.import_("//sebs/cpp.sebs")
+
+service_api_lib = _cpp.Library(
+  name = "service_api_lib",
+  srcs = ["service_api_constants.cc",
+          "service_api_types.cc"],
+  deps = [])
+
+search_engine_service_lib = _cpp.Library(
+  name = "search_engine_service_lib",
+  srcs = ["SearchEngineService.cc",
+         ],
+  deps = [ service_api_lib,
+         ])
+search_engine_service_server_lib = _cpp.Library(
+  name = "search_engine_service_server_lib",
+  srcs = ["SearchEngineService_server.cc",
+         ],
+  deps = [ service_api_lib,
+         ])

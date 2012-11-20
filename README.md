@@ -32,7 +32,7 @@ is not insignificant. So I have provided an image with everything installed.
 
 Navigate to the `vm` directory and run:
 
-    wget https://s3.amazonaws.com/data/vm/precise64-v1.box
+    wget http://94.23.6.172/precise64-v1.box
     vagrant box add precise64-v1 precise64-v1.box
     rm precise64-v1.box
 
@@ -133,56 +133,78 @@ calculations which we can call from our simple Python application.
 Let's say we have some C++ code which returns search results for a given query.
 We can define an interface like so:
 
+    // Copyright 2012
+    // Author: Stephen Holiday (stephen.holiday@gmail.com)
+
+    namespace cpp examples.searchengine
+    namespace py examples.searchengine
+
     struct SearchRequest {
       1: string key,
       2: string url
     }
+
     struct SearchResult {
       1: string key,
       2: string url,
-      3: float score
+      3: double score
     }
+
     struct SearchResponse {
       1: list<SearchResult> results,
       2: bool success,
       3: string message
     }
-    service SearchEngine {
+
+    service SearchEngineService {
       SearchResponse search(1: SearchRequest request)
+      i32 ping()
     }
 
-#### Thrift Server
+#### Thrift C++ Server
 Then the C++ service would look something like this:
 
 ```cpp
-class SearchEngine : virtual public SearchEngineIf {
+class SearchEngineServiceImpl : virtual public SearchEngineServiceIf {
  public:
-  SearchEngine() {
-    // Initialization.
-  }
-
-  void search(SearchResponse& response, const SearchRequest request) {
-    // Your implementation goes here
-    printf("search\n");
-  }
+  SearchEngineServiceImpl() {};
+  void search(SearchResponse& response, const SearchRequest& request);
+  int32_t ping();
 };
 ```
 
-#### Thrift Client
+#### Thrift Python Client
 ```python
-# Make an object
+# Create a socket to the server.
+transport = TSocket.TSocket('localhost', 9001)
+# Use a framing transport.
+transport = TTransport.TFramedTransport(transport)
+# Use a binary protocol.
+protocol = TBinaryProtocol.TBinaryProtocol(transport)
+# Create the client wrapper.
+client = SearchEngineService.Client(protocol)
+# Connect to the server.
+transport.open()
+
+# Attempt to ping the server.
+print "Ping result: %s" % client.ping()
+
+# Create a fake search request.
 request = SearchRequest(url="http://example.com/img.png")
 
-# Talk to a server via TCP sockets, using a binary protocol
-transport = TSocket.TSocket("localhost", 9090)
-transport.open()
-protocol = TBinaryProtocol.TBinaryProtocol(transport)
+# Send the request.
+print "Sending request..."
+response = client.search(request)
+print "Recieved response."
 
-# Use the service we already defined
-service = SearchEngine.Client(protocol)
-response = service.search(request)
+if response.success:
+  print "Search was a success!"
+else:
+  print "Search was a failure."
 
+print "The results are:"
 for result in response.results:
-    print '%s, %s' (result.key, result.score)
+    print '(Key: %s, Score: %s)' % (result.key, result.score)
 
+transport.close()
 ```

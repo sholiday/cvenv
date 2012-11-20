@@ -1,0 +1,21 @@
+_cpp = sebs.import_("//sebs/cpp.sebs")
+
+search_engine_lib = _cpp.Library (
+  name = "search_engine_lib",
+  srcs = [ "search_engine_impl.cc",
+         ],
+  deps = [
+          _cpp.SystemLibrary(name = "glog"),
+          _cpp.SystemLibrary(name = "thrift"),
+         ])
+
+search_engine_server = _cpp.Binary (
+  name = "search_engine_server",
+  srcs = [ "search_engine_server_main.cc",
+         ],
+  deps = [ search_engine_lib,
+           sebs.import_("//examples/search_engine/thrift/gen-cpp:search_engine_service_lib"),
+           _cpp.SystemLibrary(name = "gflags"),
+           _cpp.SystemLibrary(name = "glog"),
+           _cpp.SystemLibrary(name = "thrift"),
+         ])
